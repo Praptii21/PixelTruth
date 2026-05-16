@@ -188,16 +188,32 @@ with col_left:
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
+    MAX_FILE_SIZE_MB = 10
+    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
     if uploaded_file is not None:
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if uploaded_file.size > MAX_FILE_SIZE_BYTES:
+            st.error(
+                f"⚠️ File too large: **{uploaded_file.size / (1024 * 1024):.1f} MB**. "
+                f"Please upload an image under {MAX_FILE_SIZE_MB} MB. "
+                "Large RAW or TIFF files can crash the app — try a compressed JPG or PNG instead."
+            )
+            image = None
+        else:
+            try:
+                raw_bytes = uploaded_file.read()
+                file_bytes = np.asarray(bytearray(raw_bytes), dtype=np.uint8)
+                uploaded_file.seek(0)  # reset file pointer after read
+                image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            except Exception as e:
+                st.error(f"⚠️ Could not read the file: {e}. Please upload a valid JPG, PNG, or WebP image.")
+                image = None
+
         if image is not None:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
             st.subheader("🔍 Preview")
-            st.image(image, channels="BGR", caption="Uploaded Image", use_column_width=True)
+            st.image(image, channels="BGR", caption="Uploaded Image", use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.error("Could not read the uploaded image. Please try another file.")
 
 with col_right:
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
@@ -246,14 +262,14 @@ col_perf1, col_perf2 = st.columns(2)
 with col_perf1:
     st.markdown("**Training Accuracy Curve**")
     if os.path.exists("Figure_2.png"):
-        st.image("Figure_2.png", use_column_width=True)
+        st.image("Figure_2.png", use_container_width=True)
     else:
         st.info("Figure_2.png not found.")
 
 with col_perf2:
     st.markdown("**Training Loss Curve**")
     if os.path.exists("Figure_1.png"):
-        st.image("Figure_1.png", use_column_width=True)
+        st.image("Figure_1.png", use_container_width=True)
     else:
         st.info("Figure_1.png not found.")
 
@@ -374,4 +390,3 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
