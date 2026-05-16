@@ -4,55 +4,64 @@ Unit tests for preprocess_image and predict_image in app.py.
 Run with:
     pytest test_pipeline.py -v
 
-These tests do NOT require the real model file. predict_image tests use a
-mock model so the suite runs in CI without any large file downloads.
+Imports the real functions directly from app.py.
+Streamlit and the metrics module are stubbed out in sys.modules before
+the import so that Streamlit's module-level setup does not run during
+test collection.  The real model file is not required — tests that
+exercise predict_image patch app.model with a mock.
 """
 
-import types
-import numpy as np
-import cv2
-import pytest
+import sys
 from unittest.mock import MagicMock, patch
 
+import cv2
+import numpy as np
+import pytest
 
 # ---------------------------------------------------------------------------
-# Inline copies of the functions under test (from app.py)
-# This avoids importing app.py, which triggers Streamlit globals on import.
+# Stub Streamlit and metrics before app.py is imported.
+# Streamlit runs page-config, column layout, and widget calls at import
+# time; mocking the module prevents those from erroring in a headless env.
 # ---------------------------------------------------------------------------
 
-from tensorflow.keras.preprocessing.image import img_to_array
+_st_mock = MagicMock()
+_st_mock.columns.side_effect = lambda spec: [
+    MagicMock() for _ in (spec if isinstance(spec, list) else range(spec))
+]
+# Allow @st.cache_resource to pass the decorated function through unchanged
+# so load_deepfake_model remains a real callable (it returns None when the
+# .h5 file is absent, which is the correct CI behaviour).
+_st_mock.cache_resource = lambda f: f
+_st_mock.file_uploader.return_value = None
 
+_metrics_mock = MagicMock()
+_metrics_mock.get_sample_metrics.return_value = {
+    "accuracy": 95.0,
+    "precision": 94.0,
+    "recall": 93.0,
+    "f1_score": 93.5,
+}
+_metrics_mock.get_class_statistics.return_value = {}
 
-def preprocess_image(image):
-    image = cv2.resize(image, (96, 96))
-    image = img_to_array(image)
-    image = np.expand_dims(image, axis=0)
-    image = image / 255.0
-    return image
+sys.modules.setdefault("streamlit", _st_mock)
+sys.modules.setdefault("streamlit.components", MagicMock())
+sys.modules.setdefault("streamlit.components.v1", MagicMock())
+sys.modules.setdefault("metrics", _metrics_mock)
 
-
-def predict_image(image, model):
-    """Thin wrapper matching app.py logic, with model passed explicitly for testability."""
-    if model is None:
-        return None, None
-    processed = preprocess_image(image)
-    prediction = model.predict(processed, verbose=0)
-    class_label = np.argmax(prediction, axis=1)[0]
-    confidence = float(np.max(prediction))
-    label = "Real" if class_label == 0 else "Fake"
-    return label, confidence
+import app  # noqa: E402 — must follow sys.modules stubs
+from app import predict_image, preprocess_image  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_blank_image(h=200, w=200, channels=3):
+def make_blank_image(h: int = 200, w: int = 200, channels: int = 3) -> np.ndarray:
     """Return a solid-colour BGR image as a numpy array."""
     return np.full((h, w, channels), 128, dtype=np.uint8)
 
 
-def make_mock_model(prediction_array):
+def make_mock_model(prediction_array: np.ndarray) -> MagicMock:
     """Return a mock Keras model whose .predict() returns prediction_array."""
     mock = MagicMock()
     mock.predict.return_value = prediction_array
@@ -60,7 +69,7 @@ def make_mock_model(prediction_array):
 
 
 # ---------------------------------------------------------------------------
-# preprocess_image tests
+# preprocess_image
 # ---------------------------------------------------------------------------
 
 class TestPreprocessImage:
@@ -114,61 +123,63 @@ class TestPreprocessImage:
 
 
 # ---------------------------------------------------------------------------
-# predict_image tests
+# predict_image
 # ---------------------------------------------------------------------------
 
 class TestPredictImage:
 
     def test_returns_real_label_when_class_0_wins(self):
         """When model predicts class 0 with high confidence, label must be 'Real'."""
-        model = make_mock_model(np.array([[0.9, 0.1]]))
-        image = make_blank_image()
-        label, confidence = predict_image(image, model)
+        mock_model = make_mock_model(np.array([[0.9, 0.1]]))
+        with patch.object(app, "model", mock_model):
+            label, confidence = predict_image(make_blank_image())
         assert label == "Real"
 
     def test_returns_fake_label_when_class_1_wins(self):
         """When model predicts class 1 with high confidence, label must be 'Fake'."""
-        model = make_mock_model(np.array([[0.1, 0.9]]))
-        image = make_blank_image()
-        label, confidence = predict_image(image, model)
+        mock_model = make_mock_model(np.array([[0.1, 0.9]]))
+        with patch.object(app, "model", mock_model):
+            label, confidence = predict_image(make_blank_image())
         assert label == "Fake"
 
     def test_confidence_is_float(self):
         """Confidence score must be a Python float."""
-        model = make_mock_model(np.array([[0.8, 0.2]]))
-        image = make_blank_image()
-        label, confidence = predict_image(image, model)
+        mock_model = make_mock_model(np.array([[0.8, 0.2]]))
+        with patch.object(app, "model", mock_model):
+            label, confidence = predict_image(make_blank_image())
         assert isinstance(confidence, float), (
             f"Expected float confidence, got {type(confidence)}"
         )
 
     def test_confidence_between_0_and_1(self):
         """Confidence must be in [0.0, 1.0]."""
-        model = make_mock_model(np.array([[0.7, 0.3]]))
-        image = make_blank_image()
-        label, confidence = predict_image(image, model)
+        mock_model = make_mock_model(np.array([[0.7, 0.3]]))
+        with patch.object(app, "model", mock_model):
+            label, confidence = predict_image(make_blank_image())
         assert 0.0 <= confidence <= 1.0, f"Confidence out of range: {confidence}"
 
     def test_none_model_returns_none_none(self):
         """If no model is loaded, both return values must be None."""
-        image = make_blank_image()
-        label, confidence = predict_image(image, model=None)
+        with patch.object(app, "model", None):
+            label, confidence = predict_image(make_blank_image())
         assert label is None
         assert confidence is None
 
     def test_model_receives_preprocessed_input(self):
-        """model.predict must be called with shape (1, 96, 96, 3)."""
-        model = make_mock_model(np.array([[0.6, 0.4]]))
-        image = make_blank_image(h=300, w=400)
-        predict_image(image, model)
-        call_args = model.predict.call_args[0][0]
+        """model.predict must be called with a tensor of shape (1, 96, 96, 3)."""
+        mock_model = make_mock_model(np.array([[0.6, 0.4]]))
+        with patch.object(app, "model", mock_model):
+            predict_image(make_blank_image(h=300, w=400))
+        call_args = mock_model.predict.call_args[0][0]
         assert call_args.shape == (1, 96, 96, 3), (
             f"model.predict received wrong shape: {call_args.shape}"
         )
 
+
     def test_label_is_one_of_valid_classes(self):
         """Label must be exactly 'Real' or 'Fake', nothing else."""
         for prediction in [np.array([[0.9, 0.1]]), np.array([[0.1, 0.9]])]:
-            model = make_mock_model(prediction)
-            label, _ = predict_image(make_blank_image(), model)
+            mock_model = make_mock_model(prediction)
+            with patch.object(app, "model", mock_model):
+                label, _ = predict_image(make_blank_image())
             assert label in ("Real", "Fake"), f"Unexpected label: {label}"
