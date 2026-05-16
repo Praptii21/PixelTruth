@@ -154,11 +154,12 @@ with col_left:
 
     if uploaded_file is not None:
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        uploaded_file.seek(0)  # reset file pointer after read
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if image is not None:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
             st.subheader("🔍 Preview")
-            st.image(image, channels="BGR", caption="Uploaded Image", use_column_width=True)
+            st.image(image, channels="BGR", caption="Uploaded Image", use_container_width=True)
             st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.error("Could not read the uploaded image. Please try another file.")
@@ -210,14 +211,14 @@ col_perf1, col_perf2 = st.columns(2)
 with col_perf1:
     st.markdown("**Training Accuracy Curve**")
     if os.path.exists("Figure_2.png"):
-        st.image("Figure_2.png", use_column_width=True)
+        st.image("Figure_2.png", use_container_width=True)
     else:
         st.info("Figure_2.png not found.")
 
 with col_perf2:
     st.markdown("**Training Loss Curve**")
     if os.path.exists("Figure_1.png"):
-        st.image("Figure_1.png", use_column_width=True)
+        st.image("Figure_1.png", use_container_width=True)
     else:
         st.info("Figure_1.png not found.")
 
