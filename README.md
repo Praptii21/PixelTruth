@@ -79,7 +79,7 @@ It analyzes visual artifacts introduced during image synthesis and classifies im
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/daksh-ugi/PixelTruth.git
+git clone https://github.com/Piyush-Sharma788/PixelTruth.git
 cd PixelTruth
 
 # 2. Create a virtual environment (recommended)
