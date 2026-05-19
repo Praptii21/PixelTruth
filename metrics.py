@@ -78,7 +78,7 @@ def get_confusion_matrix_plot():
         margin=dict(l=60, r=40, t=80, b=60),
         height=380,
         autosize=True,
-        dragmode='zoom'  # Enables marquee-style click-and-drag zoom box
+        dragmode='zoom'  
     )
     
     return fig
@@ -101,7 +101,7 @@ def get_roc_curve_plot():
     Returns:
         plotly.graph_objects.Figure
     """
-    # Set seed to keep it reproducible and consistent with the original metrics
+    #Set seed to keep it reproducible
     np.random.seed(42)
     y_true = np.array([0]*500 + [1]*500)  # 500 real, 500 fake
     
