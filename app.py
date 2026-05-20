@@ -1,6 +1,8 @@
 import os
 import cv2
 import numpy as np
+import pandas as pd
+from datetime import datetime
 import streamlit as st
 import streamlit.components.v1 as components
 from preprocessing import decode_image_bytes, preprocess_image_array, preprocess_image_bytes
@@ -304,6 +306,16 @@ with col_right:
 
         if label is not None:
 
+            # ---- Save to prediction history ----
+            if "prediction_history" not in st.session_state:
+                st.session_state.prediction_history = []
+            st.session_state.prediction_history.append({
+                "Filename": uploaded_file.name,
+                "Result": label,
+                "Confidence (%)": f"{confidence * 100:.1f}",
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
             # ---------------- Grad-CAM ----------------
             try:
                 backbone_model = model.layers[0]
@@ -506,11 +518,11 @@ st.markdown("#### 🎯 Classification Analysis")
 col_cm, col_roc = st.columns(2)
 
 with col_cm:
-    st.pyplot(get_confusion_matrix_plot(), use_container_width=True)
+    st.plotly_chart(get_confusion_matrix_plot(), use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
     st.caption(get_confusion_matrix_caption())
 
 with col_roc:
-    st.pyplot(get_roc_curve_plot(), use_container_width=True)
+    st.plotly_chart(get_roc_curve_plot(), use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
     st.caption(get_roc_curve_caption())
 
 st.markdown("<br>", unsafe_allow_html=True)
@@ -521,7 +533,7 @@ st.markdown("#### 📊 Data & Class-Level Insights")
 col_dist, col_stats = st.columns(2)
 
 with col_dist:
-    st.pyplot(get_dataset_distribution_plot(), use_container_width=True)
+    st.plotly_chart(get_dataset_distribution_plot(), use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
     st.caption(get_dataset_distribution_caption())
 
 with col_stats:
@@ -556,6 +568,31 @@ with col_stats:
                 label="Accuracy",
                 value=f"{stats['class_accuracy']:.1f}%"
             )
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ----------------------- PREDICTION HISTORY ---------------
+st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+st.subheader("🕒 Prediction History")
+
+if "prediction_history" not in st.session_state or len(st.session_state.prediction_history) == 0:
+    st.info("No predictions yet. Upload an image above to get started.")
+else:
+    df = pd.DataFrame(st.session_state.prediction_history)
+    st.dataframe(df, use_container_width=True)
+
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="⬇️ Download Report as CSV",
+        data=csv,
+        file_name="pixeltruth_report.csv",
+        mime="text/csv"
+    )
+
+    if st.button("🗑️ Clear History"):
+        st.session_state.prediction_history = []
+        st.rerun()
 
 st.markdown("</div>", unsafe_allow_html=True)
 
