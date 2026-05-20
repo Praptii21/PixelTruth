@@ -4,9 +4,14 @@ import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 from preprocessing import decode_image_bytes, preprocess_image_array, preprocess_image_bytes
+import logging
 from tensorflow.keras.models import load_model
 
 from gradcam import make_gradcam_heatmap, overlay_heatmap
+from exceptions import PreprocessingError, ModelExecutionError
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 from metrics import (
     get_sample_metrics,
@@ -63,6 +68,9 @@ custom_css = """
 .result-fake {
     border-left: 5px solid #ef4444;
 }
+.result-uncertain {
+    border-left: 5px solid #f59e0b;
+}
 .upload-box > div {
     border-radius: 18px !important;
     border: 1px dashed rgba(148,163,184,0.65) !important;
@@ -75,6 +83,12 @@ footer {visibility: hidden;}
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
+
+# ---- Confidence threshold for the "Uncertain" display state ----
+# Predictions whose winning softmax probability is below this value are
+# shown as "Low Confidence — Uncertain" instead of a firm Real/Fake verdict.
+# Raise or lower this value to widen or narrow the uncertain band.
+LOW_CONFIDENCE_THRESHOLD = 0.70
 
 # ----------------------- LOAD MODEL ------------------------
 MODEL_PATH = get_model_path()
@@ -138,22 +152,44 @@ def preprocess_uploaded_image(image_bytes):
 preprocess_uploaded_image.cache_clear = preprocess_image_bytes.cache_clear
 preprocess_uploaded_image.cache_info = preprocess_image_bytes.cache_info
 
+def preprocess_image(image):
+    # Use the shared preprocessing implementation when possible
+    try:
+        # If preprocessing was implemented in `preprocessing.py`, prefer that
+        return preprocess_image_array(image)
+    except Exception:
+        # Fallback to an inline implementation (keeps compatibility with main branch)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, (96, 96))
+        image = img_to_array(image)
+        image = np.expand_dims(image, axis=0)
+        image = image / 255.0
+        return image
+
+
+def preprocess_uploaded_image(image_bytes):
+    # Keep the PR's caching wrapper which delegates to preprocessing.preprocess_image_bytes
+    return preprocess_image_bytes(image_bytes)
+
+
+# Expose cache control helpers so tests and callers can clear or inspect cache
+preprocess_uploaded_image.cache_clear = preprocess_image_bytes.cache_clear
+preprocess_uploaded_image.cache_info = preprocess_image_bytes.cache_info
+
+
 def predict_image(image):
     if model is None:
         return None, None, None
     processed_image = preprocess_image(image)
-    prediction = model.predict(processed_image, verbose=0)
-    class_label = np.argmax(prediction, axis=1)[0]
-    confidence = float(np.max(prediction))
-    label = "Real" if class_label == 0 else "Fake"
-    return label, confidence, processed_image
-
-def find_last_conv_layer(model):
-    for layer in reversed(model.layers):
-        if "conv" in layer.name.lower():
-            return layer.name
-    raise ValueError("No convolution layer found in model")
-
+    try:
+        prediction = model.predict(processed_image, verbose=0)
+        class_label = np.argmax(prediction, axis=1)[0]
+        confidence = float(np.max(prediction))
+        label = "Real" if class_label == 0 else "Fake"
+        return label, confidence, processed_image
+    except Exception as e:
+        logger.error(f"Model inference failed: {e}", exc_info=True)
+        raise ModelExecutionError(f"Model prediction failed: {str(e)}") from e
 # ----------------------- HEADER / HERO ---------------------
 st.markdown("<h1 class='main-title'>DEEPFAKE SENTINEL</h1>", unsafe_allow_html=True)
 st.markdown(
@@ -244,14 +280,27 @@ with col_right:
         st.info("Upload a valid image to run deepfake detection.")
     else:
         with st.spinner("Analyzing image with the deepfake model..."):
-            if uploaded_image_bytes is not None:
-                processed_image = preprocess_uploaded_image(uploaded_image_bytes)
-                prediction = model.predict(processed_image, verbose=0)
-                class_label = np.argmax(prediction, axis=1)[0]
-                confidence = float(np.max(prediction))
-                label = "Real" if class_label == 0 else "Fake"
-            else:
-                label, confidence, processed_image = predict_image(image)
+            try:
+                if uploaded_image_bytes is not None:
+                    processed_image = preprocess_uploaded_image(uploaded_image_bytes)
+                    prediction = model.predict(processed_image, verbose=0)
+                    class_label = np.argmax(prediction, axis=1)[0]
+                    confidence = float(np.max(prediction))
+                    label = "Real" if class_label == 0 else "Fake"
+                else:
+                    label, confidence, processed_image = predict_image(image)
+            except PreprocessingError as e:
+                logger.error(f"Caught PreprocessingError in UI: {e}", exc_info=True)
+                st.error("⚠️ There was an issue processing the uploaded image. Please ensure it is a valid and uncorrupted image file.")
+                label, confidence, processed_image = None, None, None
+            except ModelExecutionError as e:
+                logger.error(f"Caught ModelExecutionError in UI: {e}", exc_info=True)
+                st.error("⚠️ The AI model encountered an error during analysis. Please try a different image or try again later.")
+                label, confidence, processed_image = None, None, None
+            except Exception as e:
+                logger.error(f"Caught unexpected Runtime error in UI: {e}", exc_info=True)
+                st.error("⚠️ An unexpected runtime error occurred. Our team has been notified via logs.")
+                label, confidence, processed_image = None, None, None
 
         if label is not None:
 
@@ -262,23 +311,26 @@ with col_right:
                 heatmap = make_gradcam_heatmap(processed_image, backbone_model, last_conv_layer)
                 gradcam_image = overlay_heatmap(image, heatmap)
             except Exception as e:
+                logger.warning(f"Grad-CAM visualization failed: {e}", exc_info=True)
                 st.warning(f"Grad-CAM visualization could not be generated: {str(e)}")
                 gradcam_image = None
 
             # ---------------- Result Styling ----------------
-            style_class = (
-                "result-real"
-                if label == "Real"
-                else "result-fake"
-            )
+            # Three display states: Uncertain (low confidence), Real, or Fake.
+            is_uncertain = confidence < LOW_CONFIDENCE_THRESHOLD
 
-            icon = "🟢" if label == "Real" else "🔴"
-
-            headline = (
-                "Authentic image"
-                if label == "Real"
-                else "Deepfake suspected"
-            )
+            if is_uncertain:
+                style_class = "result-uncertain"
+                icon = "🟡"
+                headline = "Low Confidence — Uncertain"
+            elif label == "Real":
+                style_class = "result-real"
+                icon = "🟢"
+                headline = "Authentic image"
+            else:
+                style_class = "result-fake"
+                icon = "🔴"
+                headline = "Deepfake suspected"
 
             # ---------------- Prediction Card ----------------
             st.markdown(
@@ -297,7 +349,16 @@ with col_right:
             st.markdown("</div>", unsafe_allow_html=True)
 
             # ---------------- Explanation Message ----------------
-            if label == "Fake":
+            if is_uncertain:
+
+                st.warning(
+                    f"The model's confidence is only {confidence * 100:.1f}% — "
+                    "this prediction is borderline and should not be treated as "
+                    "a definitive verdict. Consider using a higher-quality or "
+                    "less ambiguous image for a more reliable result."
+                )
+
+            elif label == "Fake":
 
                 st.error(
                     "The model detected patterns consistent with "
