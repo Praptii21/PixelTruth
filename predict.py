@@ -13,61 +13,36 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from tensorflow.keras.models import load_model
-
-from config import (
-    IMAGE_SIZE,
-    LOG_FORMAT,
-    SUPPORTED_EXTENSIONS,
-)
-from preprocessing import (
-    preprocess_image_array,
-    preprocess_image_bytes,
-    decode_image_bytes,
-)
-from exceptions import PreprocessingError, ModelExecutionError
-from model_utils import ensure_model_file, get_model_path, get_model_url, get_model_sha256
-
+from preprocessing import preprocess_image_bytes
 import logging
 
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+from exceptions import (
+    PreprocessingError,
+    ModelExecutionError,
+)
+
+from utils.model_loader import load_cached_model
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+)
+
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Model loading (lazy singleton)
-# ---------------------------------------------------------------------------
-
-_model = None
-
-
-def load_deepfake_model(model_path: str | None = None):
-    """Load (or return cached) deepfake-detection model.
-
-    Parameters
-    ----------
-    model_path:
-        Override the model file location.  When *None*, the path is resolved
-        via ``model_utils.get_model_path()`` / ``PIXELTRUTH_MODEL_PATH``.
-    """
-    global _model
-    if _model is not None:
-        return _model
-
-    resolved_path = model_path or get_model_path()
-    model_file = ensure_model_file(
-        model_path=resolved_path,
-        model_url=get_model_url(),
-        model_sha256=get_model_sha256(),
-        download_if_missing=True,
-    )
-    _model = load_model(model_file)
-    return _model
-
 
 # ---------------------------------------------------------------------------
 # Unified preprocessing — accepts file paths, numpy arrays, or raw bytes
 # ---------------------------------------------------------------------------
 
+SUPPORTED_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".webp",
+    ".tiff",
+    ".tif",
+}
 
 def preprocess_image(image_input) -> np.ndarray:
     """Preprocess an image for model inference.
@@ -101,62 +76,52 @@ def preprocess_image(image_input) -> np.ndarray:
     TypeError
         When *image_input* is not a supported type.
     """
-    # --- str / Path  →  read bytes, then preprocess ---
-    if isinstance(image_input, (str, Path)):
-        image_path = str(image_input)
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Image not found: {image_path}")
 
-        ext = os.path.splitext(image_path)[1].lower()
-        if ext not in SUPPORTED_EXTENSIONS:
-            raise ValueError(
-                f"Unsupported file extension '{ext}'. "
-                f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
-            )
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"Image not found: {image_path}")
 
-        try:
-            with open(image_path, "rb") as fh:
-                image_bytes = fh.read()
-            return preprocess_image_bytes(image_bytes)
-        except Exception as e:
-            logger.error(f"Image preprocessing failed for {image_path}: {e}", exc_info=True)
-            raise PreprocessingError(f"Failed to preprocess image: {str(e)}") from e
+    ext = os.path.splitext(image_path)[1].lower()
 
-    # --- bytes  →  decode + preprocess ---
-    if isinstance(image_input, bytes):
-        try:
-            return preprocess_image_bytes(image_input)
-        except Exception as e:
-            logger.error(f"Byte-based preprocessing failed: {e}", exc_info=True)
-            raise PreprocessingError(f"Failed to preprocess image bytes: {str(e)}") from e
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported file extension '{ext}'. "
+            f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+        )
 
-    # --- numpy array  →  preprocess directly ---
-    if isinstance(image_input, np.ndarray):
-        try:
-            return preprocess_image_array(image_input)
-        except Exception as e:
-            logger.error(f"Array-based preprocessing failed: {e}", exc_info=True)
-            raise PreprocessingError(f"Failed to preprocess image array: {str(e)}") from e
+    try:
 
-    raise TypeError(
-        f"Unsupported image input type: {type(image_input).__name__}. "
-        "Expected a file path (str/Path), raw bytes, or a numpy ndarray."
-    )
+        with open(image_path, "rb") as file_handle:
+            image_bytes = file_handle.read()
+
+        return preprocess_image_bytes(image_bytes)
+
+    except Exception as e:
+
+        logger.error(
+            f"Image preprocessing failed for {image_path}: {e}",
+            exc_info=True
+        )
+
+        raise PreprocessingError(
+            f"Failed to preprocess image: {str(e)}"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
 # Unified prediction
 # ---------------------------------------------------------------------------
 
-
-def predict_image(image_input, *, model_path: str | None = None) -> dict:
+def predict_image(
+    image_path: str,
+    model_path: str | None = None
+) -> dict:
     """Run deepfake detection on a single image.
 
     Parameters
     ----------
-    image_input:
-        Any input accepted by :func:`preprocess_image` — file path, bytes,
-        or numpy array.
+    image_path:
+        Path to the image to classify.
+
     model_path:
         Optional override for the model file location.
 
@@ -173,23 +138,53 @@ def predict_image(image_input, *, model_path: str | None = None) -> dict:
 
     Raises
     ------
-    FileNotFoundError / ValueError / PreprocessingError / ModelExecutionError
-        See :func:`preprocess_image` and model loading docs.
+    FileNotFoundError
+        When *image_path* does not exist on disk.
+
+    ValueError
+        When the file extension is not supported.
+
+    PreprocessingError
+        When the image cannot be decoded or preprocessed.
+
+    ModelExecutionError
+        When model inference fails.
     """
-    processed = preprocess_image(image_input)
+
+    image = preprocess_image(image_path)
 
     try:
-        model = load_deepfake_model(model_path)
-        prediction = model.predict(processed, verbose=0)
-    except (PreprocessingError, FileNotFoundError, ValueError, TypeError):
+
+        # Cached lazy-loaded model
+        model = load_cached_model()
+
+        prediction = model.predict(image, verbose=0)
+
+    except (
+        PreprocessingError,
+        FileNotFoundError,
+        ValueError
+    ):
         raise
+
     except Exception as e:
-        logger.error(f"Model prediction failed: {e}", exc_info=True)
-        raise ModelExecutionError(f"Model prediction failed: {str(e)}") from e
+
+        logger.error(
+            f"Model prediction failed: {e}",
+            exc_info=True
+        )
+
+        raise ModelExecutionError(
+            f"Model prediction failed: {str(e)}"
+        ) from e
 
     class_index = int(np.argmax(prediction, axis=1)[0])
-    confidence = float(np.max(prediction))
-    # Dataset mapping: class 0 = Real, class 1 = Fake
+
+    confidence = float(np.max(prediction)) * 100
+
+    # Dataset mapping:
+    # class 0 = Real
+    # class 1 = Fake
     label = "Fake" if class_index == 1 else "Real"
 
     result: dict = {
@@ -230,6 +225,7 @@ def predict_image_tuple(image_input):
 # ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
+
     parser = argparse.ArgumentParser(
         prog="predict.py",
         description=(
@@ -248,71 +244,102 @@ def build_parser() -> argparse.ArgumentParser:
             "  PIXELTRUTH_MODEL_SHA256 expected SHA-256 of the model file"
         ),
     )
+
     parser.add_argument(
         "images",
         metavar="IMAGE",
         nargs="+",
         help="path(s) to image file(s) to classify",
     )
+
     parser.add_argument(
         "--model",
         metavar="PATH",
         default=None,
         help=(
             "path to the .h5 model file "
-            "(default: $PIXELTRUTH_MODEL_PATH or 'deepfake_detection_model.h5')"
+            "(default: $PIXELTRUTH_MODEL_PATH or "
+            "'deepfake_detection_model.h5')"
         ),
     )
+
     parser.add_argument(
         "--json",
         dest="output_json",
         action="store_true",
         help="print results as JSON (useful for scripting)",
     )
+
     parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress informational messages; only print results",
     )
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point.  Returns 0 on success, 1 if any image fails."""
+    """Entry point. Returns 0 on success, 1 if any image fails."""
+
     parser = build_parser()
+
     args = parser.parse_args(argv)
 
     results = []
+
     exit_code = 0
 
     for image_path in args.images:
+
         try:
-            result = predict_image(image_path, model_path=args.model)
-            # Remove the numpy array before serialising for the CLI
-            cli_result = {k: v for k, v in result.items() if k != "processed_image"}
-            # Convert confidence to percentage for CLI output
-            cli_result["confidence"] = round(cli_result["confidence"] * 100, 1)
-            results.append(cli_result)
-        except (FileNotFoundError, ValueError, PreprocessingError, ModelExecutionError) as exc:
-            # Non-fatal: report the error and continue with remaining images.
+
+            result = predict_image(
+                image_path,
+                model_path=args.model
+            )
+
+            results.append(result)
+
+        except (
+            FileNotFoundError,
+            ValueError,
+            PreprocessingError,
+            ModelExecutionError
+        ) as exc:
+
             error_result = {
                 "image": image_path,
                 "error": str(exc),
             }
+
             results.append(error_result)
+
             exit_code = 1
+
             if not args.quiet:
                 print(f"[ERROR] {exc}", file=sys.stderr)
 
     if args.output_json:
-        print(json.dumps(results if len(results) > 1 else results[0], indent=2))
+
+        print(
+            json.dumps(
+                results if len(results) > 1 else results[0],
+                indent=2
+            )
+        )
+
     else:
+
         for result in results:
+
             if "error" in result:
-                continue  # already printed to stderr above
+                continue
+
             if not args.quiet:
                 print(f"\nImage      : {result['image']}")
                 print(f"Raw output : {result['raw']}")
+
             print(f"Prediction : {result['label']}")
             print(f"Confidence : {result['confidence']:.1f}%")
 

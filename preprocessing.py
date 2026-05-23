@@ -2,7 +2,7 @@ from functools import lru_cache
 
 import cv2
 import numpy as np
-from tensorflow.keras.preprocessing.image import img_to_array
+from pathlib import Path
 
 from config import IMAGE_SIZE
 
@@ -20,11 +20,28 @@ def validate_image_dimensions(image: np.ndarray) -> None:
 def preprocess_image_array(image: np.ndarray) -> np.ndarray:
     validate_image_dimensions(image)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image = cv2.resize(image, IMAGE_SIZE)
-    image = img_to_array(image)
+    image = cv2.resize(image, TARGET_IMAGE_SIZE)
+    image = image.astype("float32")
     image = np.expand_dims(image, axis=0)
     image = image / 255.0
     return image
+
+
+def preprocess_image_from_path(image_path: str | Path) -> np.ndarray:
+    path = Path(image_path)
+    if not path.exists():
+        raise FileNotFoundError(f"No file found at: {path}")
+    
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"Could not decode image at '{path}'.")
+    
+    return preprocess_image_array(image)
+
+def get_image_metadata(image: np.ndarray) -> dict:
+    h, w = image.shape[:2]
+    channels = image.shape[2] if image.ndim == 3 else 1
+    return {"height": h, "width": w, "channels": channels}
 
 
 @lru_cache(maxsize=32)
