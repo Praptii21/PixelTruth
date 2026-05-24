@@ -316,7 +316,7 @@ with col_right:
                     image,
                     channels="BGR",
                     caption="Original Image",
-                    use_column_width=True
+                    use_container_width=True
                 )
 
             with col_gc2:
@@ -327,7 +327,7 @@ with col_right:
                         gradcam_image,
                         channels="BGR",
                         caption="Grad-CAM Heatmap",
-                        use_column_width=True
+                        use_container_width=True
                     )
 
                 else:
@@ -359,12 +359,8 @@ with col_perf1:
     st.markdown("**Training Accuracy Curve**")
 
     if os.path.exists("Figure_2.png"):
-
-        st.image("Figure_2.png", use_column_width=True)
-
-        st.image("Figure_2.png", use_container_width=True)
+        st.image("Figure_2.png", use_container_width=True)  # FIX #77: removed duplicate use_column_width line
     else:
-
         st.info("Figure_2.png not found.")
 
 
@@ -373,13 +369,8 @@ with col_perf2:
     st.markdown("**Training Loss Curve**")
 
     if os.path.exists("Figure_1.png"):
-
-        st.image("Figure_1.png", use_column_width=True)
-
-        st.image("Figure_1.png", use_container_width=True)
-
+        st.image("Figure_1.png", use_container_width=True)  # FIX #77: removed duplicate use_column_width line
     else:
-
         st.info("Figure_1.png not found.")
 
 st.markdown("</div>", unsafe_allow_html=True)
